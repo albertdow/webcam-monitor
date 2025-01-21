@@ -22,6 +22,36 @@ const (
     `
 )
 
+type WebcamEvent struct {
+	State string
+	Valid bool
+}
+
+type CommandRunner interface {
+	Run(command string, args ...string) error
+}
+
+type DefaultCommandRunner struct{}
+
+func (r *DefaultCommandRunner) Run(command string, args ...string) error {
+	cmd := exec.Command(command, args...)
+	return cmd.Run()
+}
+
+func sendMessage(runner CommandRunner, recipient string, message string) error {
+	script := fmt.Sprintf(MessageTemplate, recipient, message)
+	return runner.Run("osascript", "-e", script)
+}
+
+func parseLine(line string) WebcamEvent {
+	if strings.Contains(line, "AVCaptureSessionDidStartRunningNotification") {
+		return WebcamEvent{"started", true}
+	} else if strings.Contains(line, "AVCaptureSessionDidStopRunningNotification") {
+		return WebcamEvent{"stopped", true}
+	}
+	return WebcamEvent{"", false}
+}
+
 func monitorWebcam(recipient string) {
 	cmd := exec.Command("log", "stream", "--predicate", LogPredicate)
 
@@ -32,6 +62,7 @@ func monitorWebcam(recipient string) {
 	if err := cmd.Start(); err != nil {
 		fmt.Printf("Error starting cmd: %v\n", err)
 	}
+	runner := &DefaultCommandRunner{}
 	scanner := bufio.NewScanner(stdout)
 	skipFirstLine := true
 	for scanner.Scan() {
@@ -40,21 +71,25 @@ func monitorWebcam(recipient string) {
 			skipFirstLine = false
 			continue
 		}
-		if strings.Contains(line, "AVCaptureSessionDidStartRunningNotification") {
-			fmt.Println("Webcam started...")
-			err := sendMessage(recipient, "Webcam is on!!")
-			if err != nil {
-				fmt.Printf("Could not send message: %v\n", err)
-			} else {
-				fmt.Println("Message sent.")
-			}
-		} else if strings.Contains(line, "AVCaptureSessionDidStopRunningNotification") {
-			fmt.Println("Webcam stopped...")
-			err := sendMessage(recipient, "Webcam is off now!!")
-			if err != nil {
-				fmt.Printf("Could not send message: %v\n", err)
-			} else {
-				fmt.Println("Message sent.")
+		parsedLine := parseLine(line)
+		if parsedLine.Valid {
+			switch parsedLine.State {
+			case "started":
+				fmt.Println("Webcam started...")
+				err := sendMessage(runner, recipient, "Webcam is on!!")
+				if err != nil {
+					fmt.Printf("Could not send message: %v\n", err)
+				} else {
+					fmt.Println("Message sent.")
+				}
+			case "stopped":
+				fmt.Println("Webcam stopped...")
+				err := sendMessage(runner, recipient, "Webcam is now off!!")
+				if err != nil {
+					fmt.Printf("Could not send message: %v\n", err)
+				} else {
+					fmt.Println("Message sent.")
+				}
 			}
 		}
 	}
@@ -63,18 +98,12 @@ func monitorWebcam(recipient string) {
 	}
 }
 
-func sendMessage(recipient string, message string) error {
-	script := fmt.Sprintf(MessageTemplate, recipient, message)
-	cmd := exec.Command("osascript", "-e", script)
-	return cmd.Run()
-}
-
 func main() {
 	recipient := os.Getenv("MESSAGE_RECIPIENT")
 	if recipient == "" {
 		fmt.Println("Missing MESSAGE_RECIPIENT in environment variables.")
 		return
 	}
-	fmt.Println("Starting webcam daemon...")
+	fmt.Println("Starting webcam monitor...")
 	monitorWebcam(recipient)
 }
